@@ -1626,10 +1626,15 @@ export class AgentManager {
     }
   }
 
+  // Return a single metadata snapshot so UI consumers never need one full
+  // directory scan per visible row. Navigation should reuse this snapshot.
+  listAgentInfos(parentSessionId: string, includeAll = false): AgentInfo[] {
+    return includeAll ? readAllInfos() : readScopeInfos(parentSessionId);
+  }
+
   listAgents(pathPrefix: string | undefined, parentSessionId: string, includeAll = false): AgentListEntry[] {
     const prefix = pathPrefix?.trim().replace(/^\/+/, "");
-    const infos = includeAll ? readAllInfos() : readScopeInfos(parentSessionId);
-    return infos
+    return this.listAgentInfos(parentSessionId, includeAll)
       .filter((info) => !prefix || info.taskName.startsWith(prefix))
       .map((info) => ({
         agent_name: info.canonicalName,

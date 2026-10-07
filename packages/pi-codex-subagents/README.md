@@ -128,6 +128,8 @@ While agents are starting or running, a compact one-line indicator appears above
 
 `/subagents` opens the agent browser for the current session. Each row shows the task name, status, elapsed time, model, and thinking level, with the task preview underneath. Long names are shortened to fit the terminal. Press Tab to switch to the read-only all-sessions view, then Enter to open an agent.
 
+The browser loads one metadata snapshot when opened. Navigation, redraws, and terminal resizing reuse that snapshot without reading historical agent files again. Press `r` to refresh statuses and discover newly created agents; switching between this-session and all-sessions views also reloads the snapshot.
+
 The overlay uses the child working directory for tool rendering and synchronizes in-progress output when opened midway through a run. Use Left/Right to switch between agents in the current browser scope.
 
 Child RPC processes are terminated after completion, failure, or interruption so settled agents do not keep consuming memory. `send_message` starts a fresh child process with the persisted session and continues from there. On startup, the extension also reconciles and terminates validated owned children left behind by an earlier extension process.

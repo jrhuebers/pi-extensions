@@ -43,6 +43,7 @@
     "index.ts",
     "core.ts",
     "peek.ts",
+    "picker.ts",
     "README.md",
     "LICENSE"
   ]
