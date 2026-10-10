@@ -21,6 +21,7 @@ import {
 import { SubagentPeekOverlay } from "./peek.js";
 import { createAgentPicker, type AgentSelection } from "./picker.js";
 import { renderWaitCall, waitMessage, waitParameters } from "./wait.js";
+import { boundedDisplayText, renderCompletion, renderExchange, renderResponseResult, responseBody } from "./transcript.js";
 
 function textResult(text: string, details?: any) {
   return { content: [{ type: "text" as const, text }], details };
@@ -40,10 +41,15 @@ function boundedText(text: string, maxBytes = DEFAULT_MAX_BYTES, maxLines = DEFA
   return { text: truncation.content + notice, fullOutputPath, truncated: true };
 }
 
-function boundedTextResult(text: string, details?: any) {
+function boundedTextResult(text: string, details?: any, displayText?: string) {
   const bounded = boundedText(text);
   if (!bounded.truncated) return textResult(bounded.text, details);
-  return textResult(bounded.text, { ...details, fullOutputPath: bounded.fullOutputPath, truncated: true });
+  return textResult(bounded.text, {
+    ...details,
+    fullOutputPath: bounded.fullOutputPath,
+    truncated: true,
+    ...(displayText !== undefined ? { display_text: boundedDisplayText(displayText, bounded.fullOutputPath) } : {}),
+  });
 }
 
 function cleanTarget(target: string): string {
@@ -145,6 +151,7 @@ export default function (pi: ExtensionAPI) {
       details: {
         agent_name: event.agentName,
         status: event.status,
+        ...(bounded.truncated ? { display_text: boundedDisplayText(event.finalResponse ?? event.error ?? "(No final text returned.)", bounded.fullOutputPath) } : {}),
         ...(bounded.fullOutputPath ? { fullOutputPath: bounded.fullOutputPath } : {}),
       },
     }, { deliverAs: "steer", triggerTurn: true });
@@ -160,13 +167,9 @@ export default function (pi: ExtensionAPI) {
     onUnclaimedCompletion: deliverCompletion,
   });
 
-  pi.registerMessageRenderer(completionMessageType, (message: any, { expanded }: any, theme: Theme) => {
-    const status = message.details?.status;
-    const color = status === "completed" ? "success" : status === "failed" ? "error" : "warning";
-    let text = theme.fg(color, `${status === "completed" ? "✓" : "✗"} ${message.details?.agent_name || "subagent"} ${status || "finished"}`);
-    if (expanded && typeof message.content === "string") text += `\n${theme.fg("dim", message.content)}`;
-    return new Text(text, 0, 0);
-  });
+  pi.registerMessageRenderer(completionMessageType, (message: any, { expanded }: any, theme: Theme) =>
+    renderCompletion(message, expanded, theme),
+  );
 
   const spawnAgentTool = {
     name: "spawn_agent",
@@ -240,11 +243,12 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
         throw new Error(`spawn_agent failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
-    renderCall(args: any, theme: Theme) {
-      return new Text(theme.fg("toolTitle", theme.bold("spawn_agent ")) + theme.fg("accent", args.task_name || "?") + theme.fg("dim", (args.agent_type ? ` [${args.agent_type}]` : "") + (args.model ? ` ${args.model}` : "")), 0, 0);
+    renderCall(args: any, theme: Theme, context: any) {
+      const header = `spawn_agent · lead → ${args.task_name || "?"}${args.agent_type ? ` [${args.agent_type}]` : ""}${args.model ? ` ${args.model}` : ""}`;
+      return renderExchange(header, typeof args.message === "string" ? args.message : "", theme, context?.expanded === true);
     },
-    renderResult(result: any, _options: any, theme: Theme) {
-      if (result.isError) return new Text(theme.fg("error", `✗ ${result.content?.[0]?.text || "failed"}`), 0, 0);
+    renderResult(result: any, _options: any, theme: Theme, context: any) {
+      if (context?.isError || result.isError) return new Text(theme.fg("error", `✗ ${result.content?.[0]?.text || "failed"}`), 0, 0);
       const model = result.details?.provider && result.details?.modelId
         ? ` · ${result.details.provider}/${result.details.modelId}`
         : "";
@@ -302,7 +306,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
         const startedAt = Date.now();
         const result = await manager.waitAgent(parentSessionId(ctx), params.seconds, parseTargets(params.targets), signal);
         const details = { message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out };
-        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details);
+        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details, responseBody(result));
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(`wait_agent failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -311,9 +315,8 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderCall(args: any, theme: Theme, context: any) {
       return renderWaitCall("wait_agent", args, theme, context, "any");
     },
-    renderResult(result: any, _options: any, theme: Theme) {
-      if (result.isError) return new Text(theme.fg("error", "✗ wait failed"), 0, 0);
-      return new Text(theme.fg("success", result.details?.message || "done"), 0, 0);
+    renderResult(result: any, options: any, theme: Theme, context: any) {
+      return renderResponseResult(result, options.expanded, theme, "wait_agent finished", context?.isError);
     },
   });
 
@@ -328,7 +331,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
         const startedAt = Date.now();
         const result = await manager.waitAllAgents(parentSessionId(ctx), params.seconds, parseTargets(params.targets), signal);
         const details = { message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out, pending_agents: result.pending_agents };
-        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details);
+        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details, responseBody(result));
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(`wait_all_agents failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -337,9 +340,8 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderCall(args: any, theme: Theme, context: any) {
       return renderWaitCall("wait_all_agents", args, theme, context, "all");
     },
-    renderResult(result: any, _options: any, theme: Theme) {
-      if (result.isError) return new Text(theme.fg("error", "✗ wait failed"), 0, 0);
-      return new Text(theme.fg("success", result.details?.message || "done"), 0, 0);
+    renderResult(result: any, options: any, theme: Theme, context: any) {
+      return renderResponseResult(result, options.expanded, theme, "wait_all_agents finished", context?.isError);
     },
   });
 
@@ -387,7 +389,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     async execute(_id: string, params: any, _signal: AbortSignal | undefined, _onUpdate: any, ctx: any) {
       try {
         const result = manager.readAgentResponse(cleanTarget(params.target), parentSessionId(ctx));
-        return boundedTextResult(JSON.stringify(result, null, 2), { agent_name: result.agent_name, status: result.status });
+        return boundedTextResult(JSON.stringify(result, null, 2), { agent_name: result.agent_name, status: result.status }, responseBody(result));
       } catch (error) {
         throw new Error(`read_agent_response failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -395,9 +397,8 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderCall(args: any, theme: Theme) {
       return new Text(theme.fg("toolTitle", theme.bold("read_agent_response ")) + theme.fg("accent", args.target || "?"), 0, 0);
     },
-    renderResult(result: any, _options: any, theme: Theme) {
-      if (result.isError) return new Text(theme.fg("error", "✗ read failed"), 0, 0);
-      return new Text(theme.fg("success", `✓ ${result.details?.agent_name || "response"}`), 0, 0);
+    renderResult(result: any, options: any, theme: Theme, context: any) {
+      return renderResponseResult(result, options.expanded, theme, `read_agent_response · ${result.details?.agent_name || "subagent"} → lead`, context?.isError);
     },
   });
 
@@ -417,9 +418,11 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
         throw new Error(`send_message failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
-    renderCall(args: any, theme: Theme) { return new Text(theme.fg("toolTitle", theme.bold("send_message ")) + theme.fg("accent", args.target || "?"), 0, 0); },
-    renderResult(result: any, _options: any, theme: Theme) {
-      if (result.isError) return new Text(theme.fg("error", "✗ send failed"), 0, 0);
+    renderCall(args: any, theme: Theme, context: any) {
+      return renderExchange(`send_message · lead → ${args.target || "?"}`, typeof args.message === "string" ? args.message : "", theme, context?.expanded === true);
+    },
+    renderResult(result: any, _options: any, theme: Theme, context: any) {
+      if (context?.isError || result.isError) return new Text(theme.fg("error", `✗ ${result.content?.[0]?.text || "send failed"}`), 0, 0);
       return new Text(theme.fg("success", result.details?.delivery === "steer" ? "✓ steered" : "✓ started"), 0, 0);
     },
   });

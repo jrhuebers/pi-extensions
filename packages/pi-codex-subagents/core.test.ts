@@ -1094,6 +1094,17 @@ describe("extension completion delivery and TUI", () => {
         message: "slow finish",
       }, undefined, undefined, ctx);
 
+      const transcriptTheme = { fg: (_color: string, text: string) => text };
+      const outgoing = tools.get("spawn_agent").renderCall({ task_name: "review", message: "Visible initial assignment." }, transcriptTheme, { expanded: false }).render(120).join("\n");
+      expect(outgoing).toContain("lead → review");
+      expect(outgoing).toContain("Visible initial assignment.");
+      const steering = tools.get("send_message").renderCall({ target: "review", message: "Visible steering message." }, transcriptTheme, { expanded: false }).render(120).join("\n");
+      expect(steering).toContain("lead → review");
+      expect(steering).toContain("Visible steering message.");
+      for (const name of ["spawn_agent", "send_message", "wait_agent", "wait_all_agents", "read_agent_response"]) {
+        const errorResult = { content: [{ type: "text", text: "Visible tool execution error." }] };
+        expect(tools.get(name).renderResult(errorResult, { expanded: false }, transcriptTheme, { isError: true }).render(120).join("\n")).toContain("Visible tool execution error.");
+      }
       const spawnRendered = tools.get("spawn_agent").renderResult(spawnResult, {}, { fg: (_color: string, text: string) => text }).render(400);
       expect(spawnRendered.join("\n").trim()).toBe(`✓ ${spawnResult.details.task_name} · test/fake · high`);
 
@@ -1108,6 +1119,12 @@ describe("extension completion delivery and TUI", () => {
       expect(widget).toBeUndefined();
       expect(sentMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
       expect(sentMessages[0].message.content).toContain("response:slow finish");
+      const received = renderers.get("pi-codex-subagent-completion")(sentMessages[0].message, { expanded: false }, transcriptTheme).render(400).join("\n");
+      expect(received).toContain("→ lead");
+      expect(received).toContain("response:slow finish");
+      expect(received).not.toContain("subagent_notification");
+      const waitedAll = await tools.get("wait_all_agents").execute("visible-all", { seconds: 1, message: "Review received.", targets: ["x".repeat(200)] }, undefined, undefined, ctx);
+      expect(tools.get("wait_all_agents").renderResult(waitedAll, { expanded: false }, transcriptTheme).render(400).join("\n")).toContain("response:slow finish");
 
       await tools.get("spawn_agent").execute("spawn-2", {
         task_name: "large-output",
@@ -1125,6 +1142,11 @@ describe("extension completion delivery and TUI", () => {
       expect(largeWait.details.timed_out).toBe(false);
       expect(largeWait.content[0].text).toContain("WAIT_MESSAGE_SURVIVES_TRUNCATION");
       expect(largeWait.content[0].text).toContain("Output truncated");
+      expect(largeWait.details.display_text).toContain("x".repeat(10));
+      expect(tools.get("wait_agent").renderResult(largeWait, { expanded: false }, transcriptTheme).render(120).join("\n")).toContain("x".repeat(10));
+      expect(renderers.get("pi-codex-subagent-completion")(large, { expanded: true }, transcriptTheme).render(120).join("\n")).toContain("Full output saved to:");
+      const readBack = await tools.get("read_agent_response").execute("visible-read", { target: "large-output" }, undefined, undefined, ctx);
+      expect(tools.get("read_agent_response").renderResult(readBack, { expanded: false }, transcriptTheme).render(120).join("\n")).toContain("x".repeat(10));
 
       await tools.get("spawn_agent").execute("spawn-3", {
         task_name: "routed",

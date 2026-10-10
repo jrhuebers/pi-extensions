@@ -45,6 +45,7 @@
     "peek.ts",
     "picker.ts",
     "wait.ts",
+    "transcript.ts",
     "README.md",
     "LICENSE"
   ]

@@ -144,6 +144,14 @@ A thinking level written into an `enabledModels` pattern, such as `anthropic/cla
 
 A child completion or failure is delivered automatically to its parent session after the child reaches final status. If the parent is active, the result joins the current run; if the parent is idle, it starts a continuation turn. Continue independent work instead of waiting. Use `wait_agent` or `wait_all_agents` only when the next action depends on those responses and no useful work remains meanwhile; an active wait receives the result directly without a duplicate automatic message.
 
+## Visible message exchanges
+
+Lead-to-child messages are the `message` arguments of `spawn_agent` (initial assignment) and `send_message` (steering or a new turn). Child-to-lead automatic completions are Pi custom messages of type `pi-codex-subagent-completion`, delivered as steering with `triggerTurn: true`; they are not ordinary user messages. If a wait tool claims a completion, the child response instead appears in that tool's result, without an additional automatic notification.
+
+The normal transcript shows the actual assignment/steering text under `lead → task` and readable response text under `task → lead`, including responses returned by `wait_agent`, `wait_all_agents`, and `read_agent_response`. Collapsed views preview up to eight rendered body lines and 2,000 characters; expand tool output (Ctrl+O by default, configurable as `app.tools.expand`) to read the full message within the standard output limits. Oversized responses retain a full-output file notice and readable bounded display text even when their model-facing JSON has been truncated. Saved ordinary completion messages from earlier versions also render as readable text rather than XML/JSON wrappers.
+
+These are rendering changes only: no duplicate chat messages or extra model turns are added, and model-facing notification content, routing, and completion suppression are unchanged. Only final responses/failures are exchanged automatically; inspect `/subagents` to see a child's intermediate tools, thinking, or streamed progress. Reload the extension while children are idle, or start a fresh parent session, to install the updated renderers.
+
 ## Commands and TUI
 
 While agents are starting or running, a compact one-line indicator appears above the editor. It shows the task name for one active agent or a count for multiple agents and points to `/subagents`. The indicator disappears when no agents are active.
@@ -171,7 +179,7 @@ Run the package regression suite with Bun and explicit test-only storage. The en
 ```sh
 PI_CODING_AGENT_DIR=/tmp/pi-codex-subagents-tests \
 PI_SUBAGENT_TEMP_DIR=/tmp/pi-codex-subagents-tests/temp \
-bun test packages/pi-codex-subagents/{core,peek,picker,wait}.test.ts
+bun test packages/pi-codex-subagents/{core,peek,picker,wait,transcript}.test.ts
 ```
 
 ## License
