@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import { Text, truncateToWidth, visibleWidth, type KeyId } from "@earendil-works/pi-tui";
 import {
   AgentManager,
+  agentCompletionKey,
   getAgentDefinitionsDescription,
   loadSubagentConfig,
   THINKING_LEVELS,
@@ -20,7 +21,7 @@ import {
 } from "./core.js";
 import { SubagentPeekOverlay } from "./peek.js";
 import { createAgentPicker, type AgentSelection } from "./picker.js";
-import { renderWaitCall, waitMessage, waitParameters } from "./wait.js";
+import { renderWaitCall, renderWaitResult, waitMessage, waitParameters } from "./wait.js";
 import { boundedDisplayText, renderCompletion, renderExchange, renderResponseResult, responseBody } from "./transcript.js";
 
 function textResult(text: string, details?: any) {
@@ -69,6 +70,8 @@ function parentSessionId(ctx: any): string {
 export default function (pi: ExtensionAPI) {
   const widgetKey = "pi-codex-subagents";
   const completionMessageType = "pi-codex-subagent-completion";
+  const replyEntryType = "pi-codex-subagent-reply";
+  const shownCompletionIds = new Set<string>();
   let cachedSkills: Array<{ name: string; description: string; filePath: string }> = [];
   let cachedSkillsSignature = "";
   let activeContext: any;
@@ -135,6 +138,22 @@ export default function (pi: ExtensionAPI) {
     }));
   };
 
+  const displayCompletion = (event: AgentCompletionEvent) => {
+    const key = event.completionKey ?? event.id;
+    if (!isCurrentSession(event.parentSessionId) || shownCompletionIds.has(key)) return;
+    const raw = event.finalResponse ?? event.error ?? "(No final text returned.)";
+    const body = boundedText(raw);
+    pi.appendEntry(replyEntryType, {
+      completion_id: event.id,
+      completion_key: key,
+      details: {
+        agent_name: event.agentName, status: event.status,
+        display_text: body.truncated ? boundedDisplayText(raw, body.fullOutputPath) : body.text,
+      },
+    });
+    shownCompletionIds.add(key);
+  };
+
   const deliverCompletion = (event: AgentCompletionEvent) => {
     if (!isCurrentSession(event.parentSessionId)) return;
     const payload = JSON.stringify({
@@ -147,7 +166,9 @@ export default function (pi: ExtensionAPI) {
     pi.sendMessage({
       customType: completionMessageType,
       content: `<subagent_notification>\n${bounded.text}\n</subagent_notification>`,
-      display: true,
+      // The UI-only entry above is the single visible reply. This message is
+      // still delivered to the model when no wait has claimed the completion.
+      display: false,
       details: {
         agent_name: event.agentName,
         status: event.status,
@@ -164,11 +185,17 @@ export default function (pi: ExtensionAPI) {
       else activeAgents.delete(event.agentName);
       refreshAgentWidget();
     },
+    onCompletion: displayCompletion,
     onUnclaimedCompletion: deliverCompletion,
   });
 
+  // Keep legacy visible notifications readable. New replies use persistent
+  // UI-only entries, independent of whether a wait or steering delivered them.
   pi.registerMessageRenderer(completionMessageType, (message: any, { expanded }: any, theme: Theme) =>
     renderCompletion(message, expanded, theme),
+  );
+  pi.registerEntryRenderer(replyEntryType, (entry: any, { expanded }: any, theme: Theme) =>
+    renderCompletion(entry.data, expanded, theme),
   );
 
   const spawnAgentTool = {
@@ -260,6 +287,26 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
   pi.on("session_start", async (_event: any, ctx: any) => {
     activeContext = ctx;
     activeAgents.clear();
+    shownCompletionIds.clear();
+    const branch = ctx.sessionManager.getBranch?.() ?? [];
+    const infos = new Map(manager.listAgentInfos(parentSessionId(ctx)).map((info) => [info.canonicalName, info]));
+    for (const entry of branch) {
+      if (entry.type === "custom" && entry.customType === replyEntryType) {
+        const key = entry.data?.completion_key ?? entry.data?.completion_id;
+        if (typeof key === "string") shownCompletionIds.add(key);
+      }
+      // Upgrade the deduplication identity for older visible reply cards or
+      // notifications. Only a card newer than the current final turn matches.
+      const data = entry.type === "custom" && entry.customType === replyEntryType ? entry.data
+        : entry.type === "custom_message" && entry.customType === completionMessageType && entry.display !== false ? entry
+        : entry.message?.customType === completionMessageType && entry.message.display !== false ? entry.message
+        : undefined;
+      const info = data?.details?.agent_name ? infos.get(data.details.agent_name) : undefined;
+      const timestamp = Date.parse(entry.timestamp ?? "");
+      if (info?.completedAt && timestamp >= info.completedAt && info.status === data?.details?.status) {
+        shownCompletionIds.add(agentCompletionKey(info));
+      }
+    }
     try { spawnModels = resolveSpawnModels(ctx); }
     catch (error: any) { ctx.ui?.notify?.(`spawn_agent model resolution failed, keeping the previous list: ${error?.message || error}`, "warning"); }
     pi.registerTool(spawnAgentTool);
@@ -305,8 +352,10 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
         const message = waitMessage(params.message);
         const startedAt = Date.now();
         const result = await manager.waitAgent(parentSessionId(ctx), params.seconds, parseTargets(params.targets), signal);
-        const details = { message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out };
-        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details, responseBody(result));
+        // Also cover persisted-terminal fast paths that bypass pushMailbox.
+        if (result.event) displayCompletion(result.event);
+        const details = { reply_cards_present: true, message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out };
+        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details);
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(`wait_agent failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -316,7 +365,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       return renderWaitCall("wait_agent", args, theme, context, "any");
     },
     renderResult(result: any, options: any, theme: Theme, context: any) {
-      return renderResponseResult(result, options.expanded, theme, "wait_agent finished", context?.isError);
+      return renderWaitResult(result, options, theme, context);
     },
   });
 
@@ -330,8 +379,16 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
         const message = waitMessage(params.message);
         const startedAt = Date.now();
         const result = await manager.waitAllAgents(parentSessionId(ctx), params.seconds, parseTargets(params.targets), signal);
-        const details = { message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out, pending_agents: result.pending_agents };
-        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details, responseBody(result));
+        for (const response of result.responses) {
+          displayCompletion({
+            id: response.completion_key ?? `${parentSessionId(ctx)}:${response.agent_name}`,
+            completionKey: response.completion_key,
+            parentSessionId: parentSessionId(ctx), agentName: response.agent_name,
+            status: response.status, finalResponse: response.finalResponse, error: response.error, createdAt: Date.now(),
+          });
+        }
+        const details = { reply_cards_present: true, message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out, pending_agents: result.pending_agents };
+        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details);
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(`wait_all_agents failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -341,7 +398,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       return renderWaitCall("wait_all_agents", args, theme, context, "all");
     },
     renderResult(result: any, options: any, theme: Theme, context: any) {
-      return renderResponseResult(result, options.expanded, theme, "wait_all_agents finished", context?.isError);
+      return renderWaitResult(result, options, theme, context);
     },
   });
 
@@ -423,7 +480,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     },
     renderResult(result: any, _options: any, theme: Theme, context: any) {
       if (context?.isError || result.isError) return new Text(theme.fg("error", `✗ ${result.content?.[0]?.text || "send failed"}`), 0, 0);
-      return new Text(theme.fg("success", result.details?.delivery === "steer" ? "✓ steered" : "✓ started"), 0, 0);
+      return new Text("", 0, 0);
     },
   });
 

@@ -109,6 +109,7 @@ export interface AgentListEntry {
 }
 
 export interface AgentResponseEntry {
+  completion_key?: string;
   agent_name: string;
   status: AgentRuntimeStatus;
   finalResponse?: string;
@@ -161,6 +162,7 @@ interface LiveAgent {
 
 export interface AgentCompletionEvent {
   id: string;
+  completionKey?: string;
   parentSessionId: string;
   agentName: string;
   status: AgentRuntimeStatus;
@@ -175,8 +177,14 @@ export interface AgentActivityEvent {
   active: boolean;
 }
 
+export function agentCompletionKey(info: Pick<AgentInfo, "parentSessionId" | "id" | "messageCount" | "status">): string {
+  return `${info.parentSessionId}:${info.id}:${info.messageCount ?? 0}:${info.status}`;
+}
+
 export interface AgentManagerOptions {
   onActivityChange?: (event: AgentActivityEvent) => void;
+  /** Observe each completion for display, independently of model delivery/wait claims. */
+  onCompletion?: (event: AgentCompletionEvent) => void;
   onUnclaimedCompletion?: (event: AgentCompletionEvent) => void;
   modelResponseTimeoutMs?: number;
 }
@@ -1397,6 +1405,8 @@ export class AgentManager {
       finalResponse: live.info.finalResponse,
       error: live.info.error,
       completedAt: live.info.completedAt,
+      messageCount: live.info.messageCount,
+      lastTaskMessage: live.info.lastTaskMessage,
     };
     this.removeMailboxEvents(live.info.parentSessionId, live.info.canonicalName);
     const targets = this.defaultWaitAllTargets.get(live.info.parentSessionId) ?? new Set<string>();
@@ -1419,6 +1429,8 @@ export class AgentManager {
       await this.sendCommand(live, { type: "prompt", message });
     } catch (error) {
       live.info.status = previousFinalState.status;
+      live.info.messageCount = previousFinalState.messageCount;
+      live.info.lastTaskMessage = previousFinalState.lastTaskMessage;
       if (previousFinalState.finalResponse !== undefined) live.info.finalResponse = previousFinalState.finalResponse;
       else delete live.info.finalResponse;
       if (previousFinalState.error !== undefined) live.info.error = previousFinalState.error;
@@ -1555,6 +1567,7 @@ export class AgentManager {
       id: randomUUID(),
       parentSessionId: persisted.parentSessionId,
       agentName: persisted.canonicalName,
+      completionKey: agentCompletionKey(persisted),
       status: persisted.status,
       finalResponse: persisted.finalResponse,
       error: persisted.error,
@@ -1576,6 +1589,7 @@ export class AgentManager {
       id: randomUUID(),
       parentSessionId: live.info.parentSessionId,
       agentName: live.info.canonicalName,
+      completionKey: agentCompletionKey(live.info),
       status: "completed",
       finalResponse: live.info.finalResponse,
       createdAt: Date.now(),
@@ -1596,6 +1610,7 @@ export class AgentManager {
       id: randomUUID(),
       parentSessionId: live.info.parentSessionId,
       agentName: live.info.canonicalName,
+      completionKey: agentCompletionKey(live.info),
       status: "failed",
       error,
       createdAt: Date.now(),
@@ -1610,6 +1625,7 @@ export class AgentManager {
   }
 
   private pushMailbox(event: AgentCompletionEvent, notify = true): void {
+    try { this.options.onCompletion?.(event); } catch {}
     this.removeMailboxEvents(event.parentSessionId, event.agentName);
     const waiterIndex = this.waiters.findIndex((waiter) => waiter.parentSessionId === event.parentSessionId && targetMatches(event, waiter.targets));
     if (waiterIndex !== -1) {
@@ -1658,6 +1674,7 @@ export class AgentManager {
   private agentResponse(info: AgentInfo): AgentResponseEntry {
     return {
       agent_name: info.canonicalName,
+      completion_key: agentCompletionKey(info),
       status: info.status,
       ...(info.finalResponse !== undefined ? { finalResponse: info.finalResponse } : {}),
       ...(info.error ? { error: info.error } : {}),
@@ -1692,6 +1709,7 @@ export class AgentManager {
             id: randomUUID(),
             parentSessionId,
             agentName: finalInfo.canonicalName,
+            completionKey: agentCompletionKey(finalInfo),
             status: finalInfo.status,
             finalResponse: finalInfo.finalResponse,
             error: finalInfo.error,
@@ -1842,7 +1860,7 @@ export class AgentManager {
       await this.terminateOwnedChild(info);
     }
     this.finishWaitTarget(parentSessionId, info.canonicalName);
-    this.pushMailbox({ id: randomUUID(), parentSessionId, agentName: info.canonicalName, status: "interrupted", createdAt: Date.now() }, false);
+    this.pushMailbox({ id: randomUUID(), parentSessionId, agentName: info.canonicalName, completionKey: agentCompletionKey(info), status: "interrupted", createdAt: Date.now() }, false);
     return { previous_status: previous };
   }
 

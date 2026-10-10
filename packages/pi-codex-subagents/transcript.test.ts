@@ -17,7 +17,8 @@ describe("visible subagent exchanges", () => {
     const message = notification('Review complete.\nUse "safe" defaults.');
     const original = message.content;
     const text = rendered(renderCompletion(message, false, theme));
-    expect(text).toContain("subagent_result review · completed");
+    expect(text).toContain("review · completed");
+    expect(text).not.toContain("subagent_result");
     expect(text).not.toContain("→ lead");
     expect(text).toContain("Review complete.");
     expect(text).toContain('Use "safe" defaults.');
@@ -41,7 +42,8 @@ describe("visible subagent exchanges", () => {
     }
     expect(backgrounds).toContain("toolSuccessBg");
     expect(backgrounds).not.toContain("customMessageBg");
-    expect(labels).toContain("subagent_result ");
+    expect(labels).toContain("review");
+    expect(labels).not.toContain("subagent_result ");
     backgrounds.length = 0;
     rendered(renderCompletion(notification("Failure.", "failed"), false, styled));
     expect(backgrounds).toContain("toolErrorBg");

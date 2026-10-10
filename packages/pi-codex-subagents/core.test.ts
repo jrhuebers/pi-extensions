@@ -884,6 +884,8 @@ describe("completion delivery", () => {
         status: "completed",
         finalResponse: settled.finalResponse,
         completedAt: settled.completedAt,
+        messageCount: settled.messageCount,
+        lastTaskMessage: settled.lastTaskMessage,
       });
       expect(manager.getAgentInfo("worker", parentSessionId).childProcess).toBeUndefined();
       expect(activity.slice(rejectedAt)).toContain(true);
@@ -930,6 +932,7 @@ describe("extension completion delivery and TUI", () => {
         on(name: string, handler: any) { if (name === "session_shutdown") shutdown = handler; },
         registerTool() {},
         registerMessageRenderer() {},
+        registerEntryRenderer() {},
         registerCommand(name: string, command: any) { commands.set(name, command); },
         registerShortcut(key: string, options: any) { shortcuts.set(key, options); },
       } as any);
@@ -953,6 +956,8 @@ describe("extension completion delivery and TUI", () => {
     const tools = new Map<string, any>();
     const commands = new Map<string, any>();
     const renderers = new Map<string, any>();
+    const entryRenderers = new Map<string, any>();
+    const customEntries: any[] = [];
     const sentMessages: Array<{ message: any; options: any }> = [];
     let widget: any;
     const pi: any = {
@@ -964,6 +969,8 @@ describe("extension completion delivery and TUI", () => {
       registerTool(tool: any) { tools.set(tool.name, tool); },
       registerCommand(name: string, command: any) { commands.set(name, command); },
       registerMessageRenderer(name: string, renderer: any) { renderers.set(name, renderer); },
+      registerEntryRenderer(name: string, renderer: any) { entryRenderers.set(name, renderer); },
+      appendEntry(customType: string, data: any) { customEntries.push({ type: "custom", customType, data }); },
       sendMessage(message: any, options: any) { sentMessages.push({ message, options }); },
       getThinkingLevel() { return "high"; },
       getActiveTools() { return ["read", "bash"]; },
@@ -988,6 +995,7 @@ describe("extension completion delivery and TUI", () => {
       sessionManager: {
         getSessionId: () => parentSessionId,
         getSessionFile: () => path.join(TEST_AGENT_DIR, "parent.jsonl"),
+        getBranch: () => customEntries,
       },
       ui: {
         setWidget(_key: string, value: any) { widget = value; },
@@ -1021,6 +1029,7 @@ describe("extension completion delivery and TUI", () => {
       expect(tools.get("spawn_agent").description).toContain("`model` takes one of the values its schema lists");
       expect([...commands.keys()]).toEqual(["subagents"]);
       expect(renderers.has("pi-codex-subagent-completion")).toBe(true);
+      expect(entryRenderers.has("pi-codex-subagent-reply")).toBe(true);
       for (const name of ["wait_agent", "wait_all_agents"]) {
         const tool = tools.get(name);
         expect(tool.parameters.required).toEqual(["seconds", "message"]);
@@ -1109,6 +1118,8 @@ describe("extension completion delivery and TUI", () => {
       expect(steering).not.toContain("lead →");
       expect(steering).toContain("Visible steering message.");
       expect(boldLabels).toEqual(["spawn_agent ", "send_message "]);
+      expect(tools.get("send_message").renderResult({ details: { delivery: "prompt" } }, {}, transcriptTheme, {}).render(120)).toEqual([]);
+      expect(tools.get("send_message").renderResult({ details: { delivery: "steer" } }, {}, transcriptTheme, {}).render(120)).toEqual([]);
       for (const name of ["spawn_agent", "send_message", "wait_agent", "wait_all_agents", "read_agent_response"]) {
         const errorResult = { content: [{ type: "text", text: "Visible tool execution error." }] };
         expect(tools.get(name).renderResult(errorResult, { expanded: false }, transcriptTheme, { isError: true }).render(120).join("\n")).toContain("Visible tool execution error.");
@@ -1127,13 +1138,23 @@ describe("extension completion delivery and TUI", () => {
       expect(widget).toBeUndefined();
       expect(sentMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
       expect(sentMessages[0].message.content).toContain("response:slow finish");
-      const received = renderers.get("pi-codex-subagent-completion")(sentMessages[0].message, { expanded: false }, transcriptTheme).render(400).join("\n");
-      expect(received).toContain("subagent_result");
+      expect(sentMessages[0].message.display).toBe(false);
+      expect(customEntries).toHaveLength(1);
+      const received = entryRenderers.get("pi-codex-subagent-reply")(customEntries[0], { expanded: false }, transcriptTheme).render(400).join("\n");
+      expect(received).not.toContain("subagent_result");
       expect(received).not.toContain("→ lead");
       expect(received).toContain("response:slow finish");
       expect(received).not.toContain("subagent_notification");
       const waitedAll = await tools.get("wait_all_agents").execute("visible-all", { seconds: 1, message: "Review received.", targets: ["x".repeat(200)] }, undefined, undefined, ctx);
-      expect(tools.get("wait_all_agents").renderResult(waitedAll, { expanded: false }, transcriptTheme).render(400).join("\n")).toContain("response:slow finish");
+      expect(tools.get("wait_all_agents").renderResult(waitedAll, { expanded: false }, transcriptTheme).render(400)).toEqual([]);
+      expect(customEntries).toHaveLength(1); // Already-visible reply is not repeated by a later wait.
+      await tools.get("spawn_agent").execute("claimed-spawn", { task_name: "active-wait", message: "slow work" }, undefined, undefined, ctx);
+      const claimed = await tools.get("wait_agent").execute("claimed-wait", { seconds: 1, message: "Done.", targets: ["active-wait"] }, undefined, undefined, ctx);
+      expect(claimed.details.timed_out).toBe(false);
+      expect(sentMessages).toHaveLength(1); // A claimed completion does not send a second model message.
+      expect(customEntries).toHaveLength(2); // But it still gets exactly one separate UI reply card.
+      expect(customEntries[1].data.details.display_text).toContain("response:slow work");
+      expect(tools.get("wait_agent").renderResult(claimed, { expanded: false }, transcriptTheme).render(400)).toEqual([]);
 
       await tools.get("spawn_agent").execute("spawn-2", {
         task_name: "large-output",
@@ -1151,11 +1172,47 @@ describe("extension completion delivery and TUI", () => {
       expect(largeWait.details.timed_out).toBe(false);
       expect(largeWait.content[0].text).toContain("WAIT_MESSAGE_SURVIVES_TRUNCATION");
       expect(largeWait.content[0].text).toContain("Output truncated");
-      expect(largeWait.details.display_text).toContain("x".repeat(10));
-      expect(tools.get("wait_agent").renderResult(largeWait, { expanded: false }, transcriptTheme).render(120).join("\n")).toContain("x".repeat(10));
+      expect(largeWait.details.reply_cards_present).toBe(true);
+      expect(tools.get("wait_agent").renderResult(largeWait, { expanded: false }, transcriptTheme).render(120)).toEqual([]);
+      const largeEntry = customEntries.find((entry) => entry.data.details.agent_name === "/large-output");
+      expect(entryRenderers.get("pi-codex-subagent-reply")(largeEntry, { expanded: true }, transcriptTheme).render(120).join("\n")).toContain("x".repeat(10));
       expect(renderers.get("pi-codex-subagent-completion")(large, { expanded: true }, transcriptTheme).render(120).join("\n")).toContain("Full output saved to:");
       const readBack = await tools.get("read_agent_response").execute("visible-read", { target: "large-output" }, undefined, undefined, ctx);
       expect(tools.get("read_agent_response").renderResult(readBack, { expanded: false }, transcriptTheme).render(120).join("\n")).toContain("x".repeat(10));
+
+      const previousCards = customEntries.length;
+      await tools.get("spawn_agent").execute("persisted-spawn", { task_name: "persisted-only", message: "hold work" }, undefined, undefined, ctx);
+      const persistedOnly = getAgent("persisted-only", parentSessionId)!;
+      fs.writeFileSync(persistedOnly.infoFile, JSON.stringify({ ...persistedOnly, status: "completed", finalResponse: "Persisted-only reply.", completedAt: Date.now() }));
+      const persistedWait = await tools.get("wait_agent").execute("persisted-wait", { seconds: 1, message: "Done.", targets: ["persisted-only"] }, undefined, undefined, ctx);
+      expect(persistedWait.details.reply_cards_present).toBe(true);
+      expect(customEntries).toHaveLength(previousCards + 1);
+      expect(customEntries.at(-1).data.details.display_text).toBe("Persisted-only reply.");
+      await tools.get("wait_all_agents").execute("persisted-again", { seconds: 1, message: "Done.", targets: ["persisted-only"] }, undefined, undefined, ctx);
+      expect(customEntries).toHaveLength(previousCards + 1);
+      await tools.get("send_message").execute("repeat-turn", { target: "x".repeat(200), message: "slow finish" }, undefined, undefined, ctx);
+      await tools.get("wait_agent").execute("repeat-wait", { seconds: 1, message: "Done.", targets: ["x".repeat(200)] }, undefined, undefined, ctx);
+      expect(customEntries).toHaveLength(previousCards + 2);
+      expect(customEntries.at(-1).data.details.display_text).toBe(customEntries[0].data.details.display_text);
+      expect(customEntries.at(-1).data.completion_key).not.toBe(customEntries[0].data.completion_key);
+
+      // Pi persists visible legacy notifications as top-level custom_message entries.
+      const latestReply = customEntries.at(-1);
+      const latestInfo = getAgent("x".repeat(200), parentSessionId)!;
+      customEntries[customEntries.length - 1] = {
+        type: "custom_message", customType: "pi-codex-subagent-completion", display: true,
+        details: { agent_name: latestInfo.canonicalName, status: latestInfo.status },
+        timestamp: new Date(latestInfo.completedAt! + 1).toISOString(),
+        content: latestInfo.finalResponse,
+      };
+      const cardsBeforeReload = customEntries.length;
+      await emit("session_start", { reason: "restart" });
+      await tools.get("wait_agent").execute("legacy-wait", { seconds: 1, message: "Done.", targets: ["x".repeat(200)] }, undefined, undefined, ctx);
+      expect(customEntries).toHaveLength(cardsBeforeReload);
+      customEntries[customEntries.length - 1] = latestReply;
+      await emit("session_start", { reason: "restart" });
+      await tools.get("wait_agent").execute("card-reload-wait", { seconds: 1, message: "Done.", targets: ["x".repeat(200)] }, undefined, undefined, ctx);
+      expect(customEntries).toHaveLength(cardsBeforeReload);
 
       await tools.get("spawn_agent").execute("spawn-3", {
         task_name: "routed",

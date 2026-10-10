@@ -72,9 +72,9 @@ export function renderCompletion(message: any, expanded: boolean, theme: Theme):
   const status = message.details?.status ?? payload?.status;
   const name = message.details?.agent_name ?? payload?.agent_name ?? "subagent";
   const body = message.details?.display_text ?? payload?.final_response ?? payload?.error ?? content;
-  const header = theme.bold("subagent_result ") + String(name).replace(/^\/+/, "") + theme.fg("dim", ` · ${status ?? "finished"}`);
-  // Automatic replies remain valid custom messages on the wire, but use the
-  // same padding and backgrounds as Pi's native completed tool-result panels.
+  const header = theme.bold(String(name).replace(/^\/+/, "")) + theme.fg("dim", ` · ${status ?? "finished"}`);
+  // A neutral reply card, not a pretend tool call. Display entries and legacy
+  // notifications share the same framing as completed tool-result panels.
   const failed = status === "failed" || status === "interrupted";
   const box = new Box(1, 1, (text) => theme.bg(failed ? "toolErrorBg" : "toolSuccessBg", text));
   box.addChild(renderExchange(header, body || "(No final text returned.)", theme, expanded));
