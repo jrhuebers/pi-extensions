@@ -1094,13 +1094,20 @@ describe("extension completion delivery and TUI", () => {
         message: "slow finish",
       }, undefined, undefined, ctx);
 
-      const transcriptTheme = { fg: (_color: string, text: string) => text };
+      const boldLabels: string[] = [];
+      const transcriptTheme = {
+        fg: (_color: string, text: string) => text,
+        bold(text: string) { boldLabels.push(text); return `\x1b[1m${text}\x1b[22m`; },
+      };
       const outgoing = tools.get("spawn_agent").renderCall({ task_name: "review", message: "Visible initial assignment." }, transcriptTheme, { expanded: false }).render(120).join("\n");
-      expect(outgoing).toContain("lead → review");
+      expect(outgoing).toContain("\x1b[1mspawn_agent \x1b[22mreview");
+      expect(outgoing).not.toContain("lead →");
       expect(outgoing).toContain("Visible initial assignment.");
       const steering = tools.get("send_message").renderCall({ target: "review", message: "Visible steering message." }, transcriptTheme, { expanded: false }).render(120).join("\n");
-      expect(steering).toContain("lead → review");
+      expect(steering).toContain("\x1b[1msend_message \x1b[22mreview");
+      expect(steering).not.toContain("lead →");
       expect(steering).toContain("Visible steering message.");
+      expect(boldLabels).toEqual(["spawn_agent ", "send_message "]);
       for (const name of ["spawn_agent", "send_message", "wait_agent", "wait_all_agents", "read_agent_response"]) {
         const errorResult = { content: [{ type: "text", text: "Visible tool execution error." }] };
         expect(tools.get(name).renderResult(errorResult, { expanded: false }, transcriptTheme, { isError: true }).render(120).join("\n")).toContain("Visible tool execution error.");

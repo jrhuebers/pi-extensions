@@ -244,7 +244,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       }
     },
     renderCall(args: any, theme: Theme, context: any) {
-      const header = `spawn_agent · lead → ${args.task_name || "?"}${args.agent_type ? ` [${args.agent_type}]` : ""}${args.model ? ` ${args.model}` : ""}`;
+      const header = theme.bold("spawn_agent ") + `${args.task_name || "?"}${args.agent_type ? ` [${args.agent_type}]` : ""}${args.model ? ` ${args.model}` : ""}`;
       return renderExchange(header, typeof args.message === "string" ? args.message : "", theme, context?.expanded === true);
     },
     renderResult(result: any, _options: any, theme: Theme, context: any) {
@@ -419,7 +419,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       }
     },
     renderCall(args: any, theme: Theme, context: any) {
-      return renderExchange(`send_message · lead → ${args.target || "?"}`, typeof args.message === "string" ? args.message : "", theme, context?.expanded === true);
+      return renderExchange(theme.bold("send_message ") + (args.target || "?"), typeof args.message === "string" ? args.message : "", theme, context?.expanded === true);
     },
     renderResult(result: any, _options: any, theme: Theme, context: any) {
       if (context?.isError || result.isError) return new Text(theme.fg("error", `✗ ${result.content?.[0]?.text || "send failed"}`), 0, 0);
