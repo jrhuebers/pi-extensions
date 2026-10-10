@@ -21,14 +21,36 @@ pi install /absolute/path/to/pi-extensions/packages/pi-codex-subagents
 | Tool | Purpose |
 |---|---|
 | `spawn_agent` | Spawn a fresh-context child Pi process |
-| `wait_agent` | Block for one completion and return its final text |
-| `wait_all_agents` | Block until every selected agent finishes |
+| `wait_agent` | Wait up to a chosen duration for one completion |
+| `wait_all_agents` | Wait up to a chosen duration for every selected agent |
 | `list_agents` | List current-session agents, or explicitly include historical sessions |
 | `read_agent_response` | Read an agent's latest final raw text response |
 | `send_message` | Steer a running agent or start another turn when settled |
 | `interrupt_agent` | Abort the current turn while preserving its session for later messages |
 
 Agent names are unique within their parent session. The same task name can exist safely in different Pi sessions. Read and control tools are always scoped to the current parent session; only `list_agents(include_all: true)` crosses session boundaries, and that view is read-only.
+
+## Bounded waits
+
+Both wait tools use the same duration/message shape as the `sleep` tool: `seconds` and `message` are required, and `targets` is optional. Fractional seconds are allowed; the duration must be finite, positive, and no greater than `2147483.647` seconds (Node's timer limit). The tools block in the foreground, show elapsed/maximum time, and return early on the relevant completion condition.
+
+```typescript
+wait_agent({
+  seconds: 60,
+  message: "Reassess whether the review is ready.",
+  targets: ["reviewer"],
+});
+
+wait_all_agents({
+  seconds: 120,
+  message: "Check the completed reviews and decide what to do next.",
+  targets: ["reviewer", "editor"],
+});
+```
+
+A completion returns `timed_out: false` and the final response(s). Reaching the duration returns normally with `timed_out: true`, not a tool error, and includes the supplied message. It never interrupts the child or cancels its work. `wait_all_agents` also returns completed responses and `pending_agents` at expiry; completed responses are consumed once, while pending targets remain available to subsequent waits and automatic completion delivery. `wait_agent` without targets waits for the next completion in the parent session, and `wait_all_agents` without targets selects outstanding agents spawned by this extension instance.
+
+Cancellation or session shutdown still rejects the wait. A timed-out wait is removed from the completion-delivery registry so a later child result is not swallowed. Existing callers must add `seconds` and `message`; there is no implicit or unlimited wait duration. Only wait when the next action genuinely depends on a subagent result and no useful independent work remains.
 
 ## Agent templates
 
@@ -141,6 +163,16 @@ Automatic completions, wait tools, and response tools follow Pi's standard 50 KB
 ## Environment
 
 `PI_SUBAGENT_PI_BIN` overrides the Pi executable used for child processes. Normally children use the same Pi installation as the parent.
+
+## Tests
+
+Run the package regression suite with Bun and explicit test-only storage. The environment variables must be set before loading any test file, because modules imported by other tests may be cached before `core.test.ts` installs its mocks. The core harness rejects a non-isolated storage root rather than touching normal agent runs.
+
+```sh
+PI_CODING_AGENT_DIR=/tmp/pi-codex-subagents-tests \
+PI_SUBAGENT_TEMP_DIR=/tmp/pi-codex-subagents-tests/temp \
+bun test packages/pi-codex-subagents/{core,peek,picker,wait}.test.ts
+```
 
 ## License
 

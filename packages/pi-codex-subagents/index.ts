@@ -20,6 +20,7 @@ import {
 } from "./core.js";
 import { SubagentPeekOverlay } from "./peek.js";
 import { createAgentPicker, type AgentSelection } from "./picker.js";
+import { renderWaitCall, waitMessage, waitParameters } from "./wait.js";
 
 function textResult(text: string, details?: any) {
   return { content: [{ type: "text" as const, text }], details };
@@ -293,22 +294,22 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
   pi.registerTool({
     name: "wait_agent",
     label: "Wait Agent",
-    description: "Wait for one session-owned agent completion, or for the next completion if targets is omitted. Use only when your next action depends on that response; otherwise continue working and let completion arrive automatically. Returns one final response. Use wait_all_agents when every target must finish.",
-    parameters: Type.Object({
-      targets: Type.Optional(Type.Array(Type.String(), { description: "Agent task names to wait on. Omit to wait for the next completion in this parent session." })),
-    }),
+    description: "Wait in the foreground for at most seconds, ending early on one session-owned agent completion (the next completion if targets is omitted). Return the supplied message and any final response. Expiry is a normal timed_out result, not an error, and does not stop agents. Use only when your next action depends on the response and no useful work remains; otherwise let completion arrive automatically. Use wait_all_agents when every target must finish.",
+    parameters: waitParameters("Agent task names to wait on. Omit to wait for the next completion in this parent session."),
     async execute(_id: string, params: any, signal: AbortSignal | undefined, _onUpdate: any, ctx: any) {
       try {
-        const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal);
-        return boundedTextResult(JSON.stringify(result, null, 2), { message: result.message });
+        const message = waitMessage(params.message);
+        const startedAt = Date.now();
+        const result = await manager.waitAgent(parentSessionId(ctx), params.seconds, parseTargets(params.targets), signal);
+        const details = { message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out };
+        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details);
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(`wait_agent failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
-    renderCall(args: any, theme: Theme) {
-      const targets = Array.isArray(args.targets) && args.targets.length ? args.targets.join(",") : "any";
-      return new Text(theme.fg("toolTitle", theme.bold("wait_agent ")) + theme.fg("accent", targets), 0, 0);
+    renderCall(args: any, theme: Theme, context: any) {
+      return renderWaitCall("wait_agent", args, theme, context, "any");
     },
     renderResult(result: any, _options: any, theme: Theme) {
       if (result.isError) return new Text(theme.fg("error", "✗ wait failed"), 0, 0);
@@ -319,22 +320,22 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
   pi.registerTool({
     name: "wait_all_agents",
     label: "Wait All Agents",
-    description: "Wait until all targeted session-owned agents reach a final status. Use only when your next action depends on every response; otherwise continue working and let completions arrive automatically. Returns their final text responses.",
-    parameters: Type.Object({
-      targets: Type.Optional(Type.Array(Type.String(), { description: "Agent task names to wait for. Omit to wait for agents spawned by this extension instance." })),
-    }),
+    description: "Wait in the foreground for at most seconds, ending early when all targeted session-owned agents reach final status. Return the supplied message, completed responses, and pending agent names. Expiry is a normal timed_out result and does not stop pending agents or discard their later notifications. Use only when your next action depends on every response and no useful work remains; otherwise let completions arrive automatically.",
+    parameters: waitParameters("Agent task names to wait for. Omit to wait for agents spawned by this extension instance."),
     async execute(_id: string, params: any, signal: AbortSignal | undefined, _onUpdate: any, ctx: any) {
       try {
-        const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal);
-        return boundedTextResult(JSON.stringify(result, null, 2), { message: result.message });
+        const message = waitMessage(params.message);
+        const startedAt = Date.now();
+        const result = await manager.waitAllAgents(parentSessionId(ctx), params.seconds, parseTargets(params.targets), signal);
+        const details = { message: `${result.message} ${message}`, seconds: params.seconds, elapsed_seconds: (Date.now() - startedAt) / 1_000, timed_out: result.timed_out, pending_agents: result.pending_agents };
+        return boundedTextResult(JSON.stringify({ ...result, ...details }, null, 2), details);
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(`wait_all_agents failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
-    renderCall(args: any, theme: Theme) {
-      const targets = Array.isArray(args.targets) && args.targets.length ? args.targets.join(",") : "all";
-      return new Text(theme.fg("toolTitle", theme.bold("wait_all_agents ")) + theme.fg("accent", targets), 0, 0);
+    renderCall(args: any, theme: Theme, context: any) {
+      return renderWaitCall("wait_all_agents", args, theme, context, "all");
     },
     renderResult(result: any, _options: any, theme: Theme) {
       if (result.isError) return new Text(theme.fg("error", "✗ wait failed"), 0, 0);

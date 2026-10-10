@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parseStreamingJson, type AssistantMessage } from "@earendil-works/pi-ai";
+import { waitTimeoutMs } from "./wait.js";
 
 export const PACKAGE_BASENAME = "pi-codex-subagents";
 export const SUBAGENT_DIR = path.join(getAgentDir(), PACKAGE_BASENAME);
@@ -1668,14 +1669,15 @@ export class AgentManager {
     this.defaultWaitAllTargets.get(parentSessionId)?.delete(canonicalAgentName(agentName));
   }
 
-  async waitAgent(parentSessionId: string, targets?: string[], signal?: AbortSignal): Promise<{ message: string; event?: AgentCompletionEvent }> {
+  async waitAgent(parentSessionId: string, seconds: number, targets?: string[], signal?: AbortSignal): Promise<{ message: string; timed_out: boolean; event?: AgentCompletionEvent }> {
+    const deadline = Date.now() + waitTimeoutMs(seconds);
     const waitSignal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal;
     throwIfAborted(waitSignal);
     const normalizedTargets = targets?.length ? new Set(targets.map(canonicalAgentName)) : undefined;
     const existing = consumeFirstMatchingMailboxEvent(this.mailbox, parentSessionId, normalizedTargets);
     if (existing) {
       this.finishWaitTarget(parentSessionId, existing.agentName);
-      return { message: `Wait completed: ${existing.agentName} ${existing.status}.`, event: existing };
+      return { message: `Wait completed: ${existing.agentName} ${existing.status}.`, timed_out: false, event: existing };
     }
     if (normalizedTargets) {
       const targetInfos = readScopeInfos(parentSessionId).filter((info) => normalizedTargets.has(info.canonicalName));
@@ -1685,6 +1687,7 @@ export class AgentManager {
         this.finishWaitTarget(parentSessionId, finalInfo.canonicalName);
         return {
           message: `Wait completed: ${finalInfo.canonicalName} ${finalInfo.status}.`,
+          timed_out: false,
           event: {
             id: randomUUID(),
             parentSessionId,
@@ -1699,10 +1702,12 @@ export class AgentManager {
     }
     return await new Promise((resolve, reject) => {
       let waiter: Waiter;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       let settled = false;
       const settle = (callback: () => void) => {
         if (settled) return;
         settled = true;
+        if (timer !== undefined) clearTimeout(timer);
         waitSignal.removeEventListener("abort", onAbort);
         this.waiters = this.waiters.filter((candidate) => candidate !== waiter);
         callback();
@@ -1713,16 +1718,21 @@ export class AgentManager {
         targets: normalizedTargets,
         resolve: (event) => settle(() => {
           this.finishWaitTarget(parentSessionId, event.agentName);
-          resolve({ message: `Wait completed: ${event.agentName} ${event.status}.`, event });
+          resolve({ message: `Wait completed: ${event.agentName} ${event.status}.`, timed_out: false, event });
         }),
       };
       this.waiters.push(waiter);
+      timer = setTimeout(() => settle(() => resolve({
+        message: `Wait ended after ${seconds} seconds without a matching completion. Agents continue running.`,
+        timed_out: true,
+      })), Math.max(1, deadline - Date.now()));
       waitSignal.addEventListener("abort", onAbort, { once: true });
       if (waitSignal.aborted) onAbort();
     });
   }
 
-  async waitAllAgents(parentSessionId: string, targets?: string[], signal?: AbortSignal): Promise<{ message: string; responses: AgentResponseEntry[] }> {
+  async waitAllAgents(parentSessionId: string, seconds: number, targets?: string[], signal?: AbortSignal): Promise<{ message: string; timed_out: boolean; responses: AgentResponseEntry[]; pending_agents: string[] }> {
+    const deadline = Date.now() + waitTimeoutMs(seconds);
     const waitSignal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal;
     throwIfAborted(waitSignal);
     const explicitTargets = targets?.length ? new Set(targets.map(canonicalAgentName)) : undefined;
@@ -1736,15 +1746,22 @@ export class AgentManager {
     const matchingInfos = () => readScopeInfos(parentSessionId).filter((info) => targetSet.has(info.canonicalName));
     const pendingNames = () => matchingInfos().filter((info) => !FINAL_STATUSES.has(info.status)).map((info) => info.canonicalName);
     const finalize = () => {
-      const responses = matchingInfos().filter((info) => FINAL_STATUSES.has(info.status)).map((info) => this.agentResponse(info));
+      const infos = matchingInfos();
+      const responses = infos.filter((info) => FINAL_STATUSES.has(info.status)).map((info) => this.agentResponse(info));
+      const pending_agents = infos.filter((info) => !FINAL_STATUSES.has(info.status)).map((info) => info.canonicalName);
+      const returnedNames = new Set(responses.map((response) => response.agent_name));
       for (const response of responses) this.finishWaitTarget(parentSessionId, response.agent_name);
       for (let index = this.mailbox.length - 1; index >= 0; index--) {
         const event = this.mailbox[index];
-        if (event.parentSessionId === parentSessionId && targetSet.has(event.agentName)) this.mailbox.splice(index, 1);
+        if (event.parentSessionId === parentSessionId && returnedNames.has(event.agentName)) this.mailbox.splice(index, 1);
       }
       return {
-        message: "All target agents reached final status.",
+        message: pending_agents.length
+          ? `Wait ended after ${seconds} seconds before all targets finished. Pending agents continue running.`
+          : "All target agents reached final status.",
+        timed_out: pending_agents.length > 0,
         responses,
+        pending_agents,
       };
     };
     const claim = { parentSessionId, targets: targetSet, suppressedEventIds: new Set<string>() };
@@ -1752,18 +1769,21 @@ export class AgentManager {
     try {
       while (true) {
         throwIfAborted(waitSignal);
-        if (!pendingNames().length) return finalize();
-        await delay(250, undefined, { signal: waitSignal });
+        if (!pendingNames().length || Date.now() >= deadline) return finalize();
+        await delay(Math.min(250, Math.max(1, deadline - Date.now())), undefined, { signal: waitSignal });
       }
     } finally {
       this.waitAllClaims.delete(claim);
       for (const eventId of claim.suppressedEventIds) {
         const event = this.mailbox.find((candidate) => candidate.id === eventId);
         if (!event) continue;
-        const claimedElsewhere = [...this.waitAllClaims].some((candidate) =>
+        const otherClaims = [...this.waitAllClaims].filter((candidate) =>
           candidate.parentSessionId === event.parentSessionId && candidate.targets.has(event.agentName)
         );
-        if (!claimedElsewhere) this.notifyUnclaimedCompletion(event);
+        // Transfer delivery responsibility to a claim that started after the
+        // completion; its eventual timeout/cancellation must not lose this event.
+        for (const other of otherClaims) other.suppressedEventIds.add(event.id);
+        if (!otherClaims.length) this.notifyUnclaimedCompletion(event);
       }
     }
   }

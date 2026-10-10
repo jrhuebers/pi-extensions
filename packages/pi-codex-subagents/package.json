@@ -44,6 +44,7 @@
     "core.ts",
     "peek.ts",
     "picker.ts",
+    "wait.ts",
     "README.md",
     "LICENSE"
   ]

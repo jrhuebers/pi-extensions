@@ -7,7 +7,13 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 const TEST_AGENT_DIR = "/tmp/pi-codex-subagents-tests";
 const FAKE_RPC_CHILD = path.join(import.meta.dir, "test", "fake-rpc-child.js");
+process.env.PI_CODING_AGENT_DIR = TEST_AGENT_DIR;
 process.env.PI_SUBAGENT_TEMP_DIR = path.join(TEST_AGENT_DIR, "temp");
+// Reset only test-owned configuration left by an interrupted prior run.
+fs.mkdirSync(path.join(TEST_AGENT_DIR, "pi-codex-subagents"), { recursive: true });
+for (const name of ["config.json", "SYSTEM.md"]) {
+  fs.rmSync(path.join(TEST_AGENT_DIR, "pi-codex-subagents", name), { force: true });
+}
 
 const codingAgent = await import("@earendil-works/pi-coding-agent");
 mock.module("@earendil-works/pi-coding-agent", () => ({
@@ -18,6 +24,7 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
 
 const {
   AgentManager,
+  SUBAGENT_DIR,
   RpcAssistantStreamState,
   RpcJsonlDecoder,
   consumeFirstMatchingMailboxEvent,
@@ -31,6 +38,9 @@ const {
   taskStorageKey,
 } = await import("./core.js");
 const { formatAgentSpecLines } = await import("./peek.js");
+if (SUBAGENT_DIR !== path.join(TEST_AGENT_DIR, "pi-codex-subagents")) {
+  throw new Error("Tests must use isolated storage. Set PI_CODING_AGENT_DIR=/tmp/pi-codex-subagents-tests before running a multi-file suite.");
+}
 
 
 test("formats the resolved subagent model and thinking for the detail overlay", () => {
@@ -432,7 +442,7 @@ describe("child process lifecycle", () => {
       expect(failed.status).toBe("failed");
       expect(failed.error).toBe(returnedError);
       expect(failed.childProcess).toBeUndefined();
-      expect((await manager.waitAllAgents(parentSessionId, ["worker"])).responses).toEqual([
+      expect((await manager.waitAllAgents(parentSessionId, 5, ["worker"])).responses).toEqual([
         expect.objectContaining({ agent_name: "/worker", status: "failed", error: failed.error }),
       ]);
 
@@ -726,7 +736,7 @@ describe("completion delivery", () => {
     const manager = new AgentManager({ onUnclaimedCompletion: (event: any) => completions.push(event) });
     try {
       await manager.spawnAgent(spawnParams(parentSessionId, "worker", "hold external"));
-      const wait = manager.waitAgent(parentSessionId, ["worker"]);
+      const wait = manager.waitAgent(parentSessionId, 5, ["worker"]);
       const persisted = manager.getAgentInfo("worker", parentSessionId);
       persisted.status = "interrupted";
       persisted.lastActivity = Date.now();
@@ -754,7 +764,7 @@ describe("completion delivery", () => {
     const manager = new AgentManager({ onUnclaimedCompletion: (event: any) => completions.push(event) });
     try {
       await manager.spawnAgent(spawnParams(parentSessionId, "worker", "hold external"));
-      const wait = manager.waitAllAgents(parentSessionId, ["worker"]);
+      const wait = manager.waitAllAgents(parentSessionId, 5, ["worker"]);
       const persisted = manager.getAgentInfo("worker", parentSessionId);
       persisted.status = "completed";
       persisted.finalResponse = "persisted response";
@@ -810,12 +820,12 @@ describe("completion delivery", () => {
     const manager = new AgentManager({ onUnclaimedCompletion: (event: any) => completions.push(event) });
     try {
       await manager.spawnAgent(spawnParams(parentSessionId, "one", "first"));
-      const waited = await manager.waitAgent(parentSessionId, ["one"]);
+      const waited = await manager.waitAgent(parentSessionId, 5, ["one"]);
       expect(waited.event).toMatchObject({ agentName: "/one", status: "completed" });
       expect(completions).toEqual([]);
 
       await manager.spawnAgent(spawnParams(parentSessionId, "two", "second"));
-      const all = await manager.waitAllAgents(parentSessionId, ["two"]);
+      const all = await manager.waitAllAgents(parentSessionId, 5, ["two"]);
       expect(all.responses).toEqual([expect.objectContaining({ agent_name: "/two", status: "completed" })]);
       expect(completions).toEqual([]);
     } finally {
@@ -836,7 +846,7 @@ describe("completion delivery", () => {
     try {
       await manager.spawnAgent(spawnParams(parentSessionId, "slow", "hold slow"));
       await manager.spawnAgent(spawnParams(parentSessionId, "fast", "fast"));
-      const wait = manager.waitAllAgents(parentSessionId, ["slow", "fast"], controller.signal);
+      const wait = manager.waitAllAgents(parentSessionId, 5, ["slow", "fast"], controller.signal);
       await waitUntil(() => manager.getAgentInfo("fast", parentSessionId).status === "completed");
       expect(completions).toEqual([]);
       controller.abort(new Error("cancelled"));
@@ -1011,6 +1021,16 @@ describe("extension completion delivery and TUI", () => {
       expect(tools.get("spawn_agent").description).toContain("`model` takes one of the values its schema lists");
       expect([...commands.keys()]).toEqual(["subagents"]);
       expect(renderers.has("pi-codex-subagent-completion")).toBe(true);
+      for (const name of ["wait_agent", "wait_all_agents"]) {
+        const tool = tools.get(name);
+        expect(tool.parameters.required).toEqual(["seconds", "message"]);
+        expect(tool.parameters.properties.seconds.maximum).toBe(2147483.647);
+        await expect(tool.execute("invalid", { message: "resume" }, undefined, undefined, ctx)).rejects.toThrow("seconds");
+        await expect(tool.execute("invalid", { seconds: 1, message: "  " }, undefined, undefined, ctx)).rejects.toThrow("message");
+      }
+      const expired = await tools.get("wait_agent").execute("bounded", { seconds: 0.01, message: "Reassess the task." }, undefined, undefined, ctx);
+      expect(expired.details.timed_out).toBe(true);
+      expect(JSON.parse(expired.content[0].text).message).toContain("Reassess the task.");
 
       fs.mkdirSync(scope, { recursive: true });
       const historyCreatedAt = Date.now();
@@ -1099,6 +1119,12 @@ describe("extension completion delivery and TUI", () => {
       expect(large.content).toContain("Output truncated");
       expect(large.details.fullOutputPath).toBeString();
       expect(fs.existsSync(large.details.fullOutputPath)).toBe(true);
+      const largeWait = await tools.get("wait_agent").execute("large-wait", {
+        seconds: 1, message: "WAIT_MESSAGE_SURVIVES_TRUNCATION", targets: ["large-output"],
+      }, undefined, undefined, ctx);
+      expect(largeWait.details.timed_out).toBe(false);
+      expect(largeWait.content[0].text).toContain("WAIT_MESSAGE_SURVIVES_TRUNCATION");
+      expect(largeWait.content[0].text).toContain("Output truncated");
 
       await tools.get("spawn_agent").execute("spawn-3", {
         task_name: "routed",
@@ -1141,7 +1167,7 @@ describe("completion mailbox", () => {
     const manager = new AgentManager();
     const controller = new AbortController();
     setTimeout(() => controller.abort(new Error("cancelled")), 10);
-    await expect(manager.waitAgent("empty-parent", undefined, controller.signal)).rejects.toThrow("cancelled");
+    await expect(manager.waitAgent("empty-parent", 5, undefined, controller.signal)).rejects.toThrow("cancelled");
     await manager.shutdown();
   });
 
@@ -1157,3 +1183,128 @@ describe("completion mailbox", () => {
     expect(events.map((event) => event.id)).toEqual(["3"]);
   });
 });
+
+describe("bounded waits", () => {
+  test("fractional timeout unregisters the waiter; later completion is still delivered", async () => {
+    const completions: any[] = [];
+    const manager = new AgentManager({ onUnclaimedCompletion: (event) => completions.push(event) });
+    try {
+      const start = Date.now();
+      const result = await manager.waitAgent("bounded-empty", 0.02);
+      expect(result).toMatchObject({ timed_out: true });
+      expect(result.event).toBeUndefined();
+      expect(Date.now() - start).toBeLessThan(200);
+      expect((manager as any).waiters).toHaveLength(0);
+      const event = { id: "late", parentSessionId: "bounded-empty", agentName: "/worker", status: "completed", finalResponse: "done", createdAt: Date.now() };
+      (manager as any).pushMailbox(event);
+      expect(completions).toEqual([event]);
+      expect((await manager.waitAgent("bounded-empty", 1)).event).toEqual(event);
+    } finally { await manager.shutdown(); }
+  });
+
+  test("early completion clears the deadline and does not publish a duplicate", async () => {
+    const completions: any[] = [];
+    const manager = new AgentManager({ onUnclaimedCompletion: (event) => completions.push(event) });
+    try {
+      const wait = manager.waitAgent("bounded-early", 0.05);
+      const event = { id: "early", parentSessionId: "bounded-early", agentName: "/worker", status: "completed", createdAt: Date.now() };
+      (manager as any).pushMailbox(event);
+      expect(await wait).toMatchObject({ timed_out: false, event });
+      await delayForTest(70);
+      expect((manager as any).waiters).toHaveLength(0);
+      expect(completions).toEqual([]);
+    } finally { await manager.shutdown(); }
+  });
+
+  test("timeout leaves a real child running and preserves default wait targets", async () => {
+    process.env.PI_SUBAGENT_PI_BIN = FAKE_RPC_CHILD;
+    const parent = "bounded-live-child";
+    const completions: any[] = [];
+    const manager = new AgentManager({ onUnclaimedCompletion: (event) => completions.push(event) });
+    try {
+      await manager.spawnAgent(spawnParams(parent, "worker", "slow work"));
+      const pid = manager.getAgentInfo("worker", parent).childProcess!.pid;
+      expect((await manager.waitAgent(parent, 0.01, ["worker"])).timed_out).toBe(true);
+      expect(manager.getAgentInfo("worker", parent).status).toBe("running");
+      expect(pidAlive(pid)).toBe(true);
+      expect((manager as any).defaultWaitAllTargets.get(parent).has("/worker")).toBe(true);
+      await waitUntil(() => completions.length === 1);
+      expect(completions[0]).toMatchObject({ agentName: "/worker", status: "completed" });
+      const all = await manager.waitAllAgents(parent, 1);
+      expect(all).toMatchObject({ timed_out: false, pending_agents: [], responses: [expect.objectContaining({ agent_name: "/worker", status: "completed" })] });
+    } finally {
+      await manager.shutdown();
+      fs.rmSync(path.join(getRunsDir(), parentScopeKey(parent)), { recursive: true, force: true });
+      delete process.env.PI_SUBAGENT_PI_BIN;
+    }
+  });
+
+  test("wait_all timeout returns partial results once and retains only pending default targets", async () => {
+    process.env.PI_SUBAGENT_PI_BIN = FAKE_RPC_CHILD;
+    const parent = "bounded-partial";
+    const completions: any[] = [];
+    const manager = new AgentManager({ onUnclaimedCompletion: (event) => completions.push(event) });
+    try {
+      await manager.spawnAgent(spawnParams(parent, "hold", "hold work"));
+      await manager.spawnAgent(spawnParams(parent, "fast", "work"));
+      const result = await manager.waitAllAgents(parent, 0.12);
+      expect(result).toMatchObject({ timed_out: true, pending_agents: ["/hold"], responses: [expect.objectContaining({ agent_name: "/fast", status: "completed" })] });
+      expect(completions).toEqual([]);
+      expect([...(manager as any).defaultWaitAllTargets.get(parent)]).toEqual(["/hold"]);
+      const next = await manager.waitAllAgents(parent, 0.01);
+      expect(next).toMatchObject({ timed_out: true, pending_agents: ["/hold"], responses: [] });
+      expect(pidAlive(manager.getAgentInfo("hold", parent).childProcess!.pid)).toBe(true);
+    } finally {
+      await manager.shutdown();
+      fs.rmSync(path.join(getRunsDir(), parentScopeKey(parent)), { recursive: true, force: true });
+      delete process.env.PI_SUBAGENT_PI_BIN;
+    }
+  });
+
+  test("overlapping wait_all claims transfer suppressed notifications on cancellation", async () => {
+    process.env.PI_SUBAGENT_PI_BIN = FAKE_RPC_CHILD;
+    const parent = "bounded-overlapping-claims";
+    const completions: any[] = [];
+    const manager = new AgentManager({ onUnclaimedCompletion: (event) => completions.push(event) });
+    const first = new AbortController();
+    const second = new AbortController();
+    try {
+      await manager.spawnAgent(spawnParams(parent, "hold", "hold work"));
+      await manager.spawnAgent(spawnParams(parent, "fast", "work"));
+      const firstWait = manager.waitAllAgents(parent, 5, undefined, first.signal);
+      await waitUntil(() => manager.getAgentInfo("fast", parent).status === "completed");
+      const secondWait = manager.waitAllAgents(parent, 5, undefined, second.signal);
+      first.abort();
+      await expect(firstWait).rejects.toThrow();
+      expect(completions).toEqual([]);
+      second.abort();
+      await expect(secondWait).rejects.toThrow();
+      expect(completions).toEqual([expect.objectContaining({ agentName: "/fast", status: "completed" })]);
+    } finally {
+      first.abort(); second.abort();
+      await manager.shutdown();
+      fs.rmSync(path.join(getRunsDir(), parentScopeKey(parent)), { recursive: true, force: true });
+      delete process.env.PI_SUBAGENT_PI_BIN;
+    }
+  });
+
+  test("cancellation and shutdown reject rather than timing out and unregister waiters", async () => {
+    const manager = new AgentManager();
+    const controller = new AbortController();
+    const wait = manager.waitAgent("bounded-cancel", 5, undefined, controller.signal);
+    controller.abort(new Error("cancelled"));
+    await expect(wait).rejects.toThrow("cancelled");
+    expect((manager as any).waiters).toHaveLength(0);
+    const shuttingDown = manager.waitAgent("bounded-shutdown", 5).then(
+      () => { throw new Error("Expected shutdown to reject the wait."); },
+      (error) => error,
+    );
+    await manager.shutdown();
+    expect((await shuttingDown).message).toContain("shut down");
+    expect((manager as any).waiters).toHaveLength(0);
+  });
+});
+
+function delayForTest(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
