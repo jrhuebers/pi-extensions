@@ -27,12 +27,14 @@ describe("visible subagent exchanges", () => {
     expect(message.content).toBe(original);
   });
 
-  test("automatic completions use native tool-result backgrounds and bold labels", () => {
+  test("replies use plain message text, not tool framing or colors", () => {
     const backgrounds: string[] = [];
+    const foregrounds: string[] = [];
     const labels: string[] = [];
     const styled = {
       ...theme,
       bg(color: string, text: string) { backgrounds.push(color); return text; },
+      fg(color: string, text: string) { foregrounds.push(color); return text; },
       bold(text: string) { labels.push(text); return text; },
     };
     const completed = renderCompletion(notification("Success."), false, styled);
@@ -40,16 +42,20 @@ describe("visible subagent exchanges", () => {
       completed.invalidate();
       expect(completed.render(width).every((line: string) => visibleWidth(line) <= width)).toBe(true);
     }
-    expect(backgrounds).toContain("toolSuccessBg");
-    expect(backgrounds).not.toContain("customMessageBg");
+    expect(backgrounds).toEqual([]);
+    expect(foregrounds).toContain("accent");
+    expect(foregrounds).not.toContain("toolTitle");
     expect(labels).toContain("review");
     expect(labels).not.toContain("subagent_result ");
-    backgrounds.length = 0;
-    rendered(renderCompletion(notification("Failure.", "failed"), false, styled));
-    expect(backgrounds).toContain("toolErrorBg");
-    backgrounds.length = 0;
-    rendered(renderCompletion(notification("Interrupted.", "interrupted"), false, styled));
-    expect(backgrounds).toContain("toolErrorBg");
+    expect(rendered(completed, 80)).toBe("review · completed\nSuccess.");
+    foregrounds.length = 0;
+    expect(rendered(renderCompletion(notification("Failure.", "failed"), false, styled), 80)).toBe("review · failed\nFailure.");
+    expect(foregrounds).toContain("error");
+    foregrounds.length = 0;
+    expect(rendered(renderCompletion(notification("Interrupted.", "interrupted"), false, styled), 80)).toBe("review · interrupted\nInterrupted.");
+    expect(foregrounds).toContain("error");
+    expect(foregrounds).not.toContain("toolTitle");
+    expect(backgrounds).toEqual([]);
   });
 
   test("shows failure text and historical text-block content", () => {
@@ -63,11 +69,11 @@ describe("visible subagent exchanges", () => {
     const body = "assignment ".repeat(500) + "FINAL_PROMPT_LINE";
     const collapsed = rendered(renderExchange("lead → review", body, theme, false), 80);
     expect(collapsed).toContain("assignment");
-    expect(collapsed).toContain("expand tools");
+    expect(collapsed).toContain("expand to read");
     expect(collapsed).not.toContain("FINAL_PROMPT_LINE");
     const expanded = rendered(renderExchange("lead → review", body, theme, true), 80);
     expect(expanded).toContain("FINAL_PROMPT_LINE");
-    expect(expanded).not.toContain("expand tools");
+    expect(expanded).not.toContain("expand to read");
   });
 
   test("previews long responses by rendered lines and preserves terminal width", () => {
