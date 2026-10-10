@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { StringDecoder } from "node:string_decoder";
 
 const PREVIEW_LINES = 8;
@@ -71,9 +71,17 @@ export function renderCompletion(message: any, expanded: boolean, theme: Theme):
   const payload = parsePayload(content);
   const status = message.details?.status ?? payload?.status;
   const name = message.details?.agent_name ?? payload?.agent_name ?? "subagent";
-  const color = status === "completed" ? "success" : status === "failed" ? "error" : "warning";
   const body = message.details?.display_text ?? payload?.final_response ?? payload?.error ?? content;
-  return renderExchange(`${status === "completed" ? "✓" : "✗"} ${name} → lead · ${status ?? "finished"}`, body || "(No final text returned.)", theme, expanded, color);
+  const header = theme.bold("subagent_result ") + String(name).replace(/^\/+/, "") + theme.fg("dim", ` · ${status ?? "finished"}`);
+  // Automatic replies remain valid custom messages on the wire, but use the
+  // same padding and backgrounds as Pi's native completed tool-result panels.
+  const failed = status === "failed" || status === "interrupted";
+  const box = new Box(1, 1, (text) => theme.bg(failed ? "toolErrorBg" : "toolSuccessBg", text));
+  box.addChild(renderExchange(header, body || "(No final text returned.)", theme, expanded));
+  return {
+    render(width: number) { return width <= 0 ? [] : box.render(width).map((line) => truncateToWidth(line, width, "")); },
+    invalidate() { box.invalidate(); },
+  };
 }
 
 export function renderResponseResult(result: any, expanded: boolean, theme: Theme, fallback: string, executionError = false): Component {

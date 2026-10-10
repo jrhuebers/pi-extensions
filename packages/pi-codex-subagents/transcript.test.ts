@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { boundedDisplayText, renderCompletion, renderExchange, renderResponseResult, responseBody } from "./transcript.js";
 
-const theme: any = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+const theme: any = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text };
 const rendered = (component: any, width = 120) => component.render(width).map((line: string) => line.trimEnd()).join("\n");
 
 function notification(response: string, status = "completed") {
@@ -17,11 +17,37 @@ describe("visible subagent exchanges", () => {
     const message = notification('Review complete.\nUse "safe" defaults.');
     const original = message.content;
     const text = rendered(renderCompletion(message, false, theme));
-    expect(text).toContain("/review → lead");
-    expect(text).toContain('Review complete.\nUse "safe" defaults.');
+    expect(text).toContain("subagent_result review · completed");
+    expect(text).not.toContain("→ lead");
+    expect(text).toContain("Review complete.");
+    expect(text).toContain('Use "safe" defaults.');
     expect(text).not.toContain("<subagent_notification>");
     expect(text).not.toContain("final_response");
     expect(message.content).toBe(original);
+  });
+
+  test("automatic completions use native tool-result backgrounds and bold labels", () => {
+    const backgrounds: string[] = [];
+    const labels: string[] = [];
+    const styled = {
+      ...theme,
+      bg(color: string, text: string) { backgrounds.push(color); return text; },
+      bold(text: string) { labels.push(text); return text; },
+    };
+    const completed = renderCompletion(notification("Success."), false, styled);
+    for (const width of [1, 10, 40, 80]) {
+      completed.invalidate();
+      expect(completed.render(width).every((line: string) => visibleWidth(line) <= width)).toBe(true);
+    }
+    expect(backgrounds).toContain("toolSuccessBg");
+    expect(backgrounds).not.toContain("customMessageBg");
+    expect(labels).toContain("subagent_result ");
+    backgrounds.length = 0;
+    rendered(renderCompletion(notification("Failure.", "failed"), false, styled));
+    expect(backgrounds).toContain("toolErrorBg");
+    backgrounds.length = 0;
+    rendered(renderCompletion(notification("Interrupted.", "interrupted"), false, styled));
+    expect(backgrounds).toContain("toolErrorBg");
   });
 
   test("shows failure text and historical text-block content", () => {

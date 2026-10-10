@@ -1097,6 +1097,7 @@ describe("extension completion delivery and TUI", () => {
       const boldLabels: string[] = [];
       const transcriptTheme = {
         fg: (_color: string, text: string) => text,
+        bg: (_color: string, text: string) => text,
         bold(text: string) { boldLabels.push(text); return `\x1b[1m${text}\x1b[22m`; },
       };
       const outgoing = tools.get("spawn_agent").renderCall({ task_name: "review", message: "Visible initial assignment." }, transcriptTheme, { expanded: false }).render(120).join("\n");
@@ -1127,7 +1128,8 @@ describe("extension completion delivery and TUI", () => {
       expect(sentMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
       expect(sentMessages[0].message.content).toContain("response:slow finish");
       const received = renderers.get("pi-codex-subagent-completion")(sentMessages[0].message, { expanded: false }, transcriptTheme).render(400).join("\n");
-      expect(received).toContain("→ lead");
+      expect(received).toContain("subagent_result");
+      expect(received).not.toContain("→ lead");
       expect(received).toContain("response:slow finish");
       expect(received).not.toContain("subagent_notification");
       const waitedAll = await tools.get("wait_all_agents").execute("visible-all", { seconds: 1, message: "Review received.", targets: ["x".repeat(200)] }, undefined, undefined, ctx);
