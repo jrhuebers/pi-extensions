@@ -17,7 +17,8 @@ describe("visible subagent exchanges", () => {
     const message = notification('Review complete.\nUse "safe" defaults.');
     const original = message.content;
     const text = rendered(renderCompletion(message, false, theme));
-    expect(text).toContain("review · completed");
+    expect(text).toContain("[subagent response] review");
+    expect(text).not.toContain("· completed");
     expect(text).not.toContain("subagent_result");
     expect(text).not.toContain("→ lead");
     expect(text).toContain("Review complete.");
@@ -47,16 +48,17 @@ describe("visible subagent exchanges", () => {
     expect(foregrounds).toContain("customMessageLabel");
     expect(foregrounds).toContain("customMessageText");
     expect(foregrounds).not.toContain("toolTitle");
-    expect(labels).toContain("review");
+    expect(labels).toContain("[subagent response]");
     expect(labels).not.toContain("subagent_result ");
-    expect(rendered(completed, 80)).toContain("review · completed");
+    expect(rendered(completed, 80)).toContain("[subagent response] review");
+    expect(rendered(completed, 80)).not.toContain("· completed");
     expect(rendered(completed, 80)).toContain("Success.");
     for (const status of ["failed", "interrupted"]) {
       backgrounds.length = 0;
       foregrounds.length = 0;
       const reply = renderCompletion(notification("Failure details.", status), false, styled);
       const text = rendered(reply, 80);
-      expect(text).toContain(`review · ${status}`);
+      expect(text).toContain(`[subagent response] review · ${status}`);
       expect(text).toContain("Failure details.");
       expect(backgrounds.length).toBeGreaterThan(0);
       expect(backgrounds.every((color) => color === "customMessageBg")).toBe(true);

@@ -72,7 +72,9 @@ export function renderCompletion(message: any, expanded: boolean, theme: Theme):
   const status = message.details?.status ?? payload?.status;
   const name = message.details?.agent_name ?? payload?.agent_name ?? "subagent";
   const body = message.details?.display_text ?? payload?.final_response ?? payload?.error ?? content;
-  const header = theme.bold(String(name).replace(/^\/+/, "")) + theme.fg("dim", ` · ${status ?? "finished"}`);
+  const exceptionalStatus = status === "failed" || status === "interrupted";
+  const header = theme.bold("[subagent response]") + ` ${String(name).replace(/^\/+/, "")}` +
+    (exceptionalStatus ? theme.fg("error", ` · ${status}`) : "");
   // Match Pi's default custom-message styling, used by background-task
   // completion notifications, rather than tool-result colors.
   const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
