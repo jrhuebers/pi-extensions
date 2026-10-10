@@ -27,7 +27,7 @@ describe("visible subagent exchanges", () => {
     expect(message.content).toBe(original);
   });
 
-  test("replies use plain message text, not tool framing or colors", () => {
+  test("replies match background completion custom-message colors, not tool colors", () => {
     const backgrounds: string[] = [];
     const foregrounds: string[] = [];
     const labels: string[] = [];
@@ -42,20 +42,28 @@ describe("visible subagent exchanges", () => {
       completed.invalidate();
       expect(completed.render(width).every((line: string) => visibleWidth(line) <= width)).toBe(true);
     }
-    expect(backgrounds).toEqual([]);
-    expect(foregrounds).toContain("accent");
+    expect(backgrounds.length).toBeGreaterThan(0);
+    expect(backgrounds.every((color) => color === "customMessageBg")).toBe(true);
+    expect(foregrounds).toContain("customMessageLabel");
+    expect(foregrounds).toContain("customMessageText");
     expect(foregrounds).not.toContain("toolTitle");
     expect(labels).toContain("review");
     expect(labels).not.toContain("subagent_result ");
-    expect(rendered(completed, 80)).toBe("review · completed\nSuccess.");
-    foregrounds.length = 0;
-    expect(rendered(renderCompletion(notification("Failure.", "failed"), false, styled), 80)).toBe("review · failed\nFailure.");
-    expect(foregrounds).toContain("error");
-    foregrounds.length = 0;
-    expect(rendered(renderCompletion(notification("Interrupted.", "interrupted"), false, styled), 80)).toBe("review · interrupted\nInterrupted.");
-    expect(foregrounds).toContain("error");
-    expect(foregrounds).not.toContain("toolTitle");
-    expect(backgrounds).toEqual([]);
+    expect(rendered(completed, 80)).toContain("review · completed");
+    expect(rendered(completed, 80)).toContain("Success.");
+    for (const status of ["failed", "interrupted"]) {
+      backgrounds.length = 0;
+      foregrounds.length = 0;
+      const reply = renderCompletion(notification("Failure details.", status), false, styled);
+      const text = rendered(reply, 80);
+      expect(text).toContain(`review · ${status}`);
+      expect(text).toContain("Failure details.");
+      expect(backgrounds.length).toBeGreaterThan(0);
+      expect(backgrounds.every((color) => color === "customMessageBg")).toBe(true);
+      expect(foregrounds).toContain("customMessageLabel");
+      expect(foregrounds).toContain("customMessageText");
+      expect(foregrounds).not.toContain("toolTitle");
+    }
   });
 
   test("shows failure text and historical text-block content", () => {

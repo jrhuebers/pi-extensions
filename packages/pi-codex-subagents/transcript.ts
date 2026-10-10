@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { StringDecoder } from "node:string_decoder";
 
 const PREVIEW_LINES = 8;
@@ -46,10 +46,10 @@ export function boundedDisplayText(text: string, fullOutputPath?: string): strin
   return bounded.content + (fullOutputPath ? `\n\n[Full output saved to: ${fullOutputPath}]` : "");
 }
 
-export function renderExchange(header: string, body: string, theme: Theme, expanded: boolean, color: "success" | "error" | "warning" | "toolTitle" | "accent" = "toolTitle"): Component {
+export function renderExchange(header: string, body: string, theme: Theme, expanded: boolean, color: "success" | "error" | "warning" | "toolTitle" | "accent" | "customMessageLabel" = "toolTitle", bodyColor: "text" | "customMessageText" = "text"): Component {
   const heading = new Text(theme.fg(color, header), 0, 0);
   const clipped = !expanded && body.length > PREVIEW_CHARS;
-  const text = new Text(theme.fg("text", clipped ? body.slice(0, PREVIEW_CHARS) : body), 0, 0);
+  const text = new Text(theme.fg(bodyColor, clipped ? body.slice(0, PREVIEW_CHARS) : body), 0, 0);
   const hint = new Text(theme.fg("dim", "… expand to read the full message"), 0, 0);
   return {
     render(width: number): string[] {
@@ -73,10 +73,14 @@ export function renderCompletion(message: any, expanded: boolean, theme: Theme):
   const name = message.details?.agent_name ?? payload?.agent_name ?? "subagent";
   const body = message.details?.display_text ?? payload?.final_response ?? payload?.error ?? content;
   const header = theme.bold(String(name).replace(/^\/+/, "")) + theme.fg("dim", ` · ${status ?? "finished"}`);
-  // Plain message text: no tool title color, background, frame, or padding.
-  // Both durable UI entries and legacy visible notifications use this renderer.
-  const failed = status === "failed" || status === "interrupted";
-  return renderExchange(header, body || "(No final text returned.)", theme, expanded, failed ? "error" : "accent");
+  // Match Pi's default custom-message styling, used by background-task
+  // completion notifications, rather than tool-result colors.
+  const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+  box.addChild(renderExchange(header, body || "(No final text returned.)", theme, expanded, "customMessageLabel", "customMessageText"));
+  return {
+    render(width: number) { return width <= 0 ? [] : box.render(width).map((line) => truncateToWidth(line, width, "")); },
+    invalidate() { box.invalidate(); },
+  };
 }
 
 export function renderResponseResult(result: any, expanded: boolean, theme: Theme, fallback: string, executionError = false): Component {
